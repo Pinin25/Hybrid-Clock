@@ -1,0 +1,1159 @@
+;;============================================================================
+;; File: software.psm
+;; This is the PicoBlaze example game program for EE178 Lab #8.
+;; No guarantee this is bug-free but it is a playable example.
+;;============================================================================
+
+;;============================================================================
+;; Ports and related constants.
+;;============================================================================
+
+CONSTANT stax            , 00 ; port for 8-bit start-x
+CONSTANT stay            , 01 ; port for 8-bit start-y
+CONSTANT endx            , 02 ; port for 8-bit end-x
+CONSTANT endy            , 03 ; port for 8-bit end-y
+CONSTANT busy            , 04 ; port for 8-bit busy
+CONSTANT beam            , 05 ; port for 8-bit beam
+CONSTANT mode            , 06 ; port for 8-bit mode
+CONSTANT prng            , 07 ; port for 8-bit prng
+CONSTANT leds_lo         , 08 ; port for 8-bit led data out
+CONSTANT leds_hi         , 09 ; port for 8-bit led data out
+CONSTANT qssd_lo         , 0a ; port for 8-bit qssd data out
+CONSTANT qssd_hi         , 0b ; port for 8-bit qssd data out
+CONSTANT qssd_dp         , 0c ; port for 8-bit qssd data out
+CONSTANT switches_lo     , 0d ; port for 8-bit switch input
+CONSTANT switches_hi     , 0e ; port for 8-bit switch input
+CONSTANT buttons         , 0f ; port for 8-bit button input
+
+CONSTANT busy_go         , 01 ; go command and busy status
+
+CONSTANT beam_hi         , 0f ; beam high intensity
+CONSTANT beam_md         , 07 ; beam med intensity
+CONSTANT beam_lo         , 03 ; beam low intensity
+
+CONSTANT mode_hld        , 00 ; mode hold framebuffer
+CONSTANT mode_clr        , 01 ; mode clear framebuffer
+CONSTANT mode_lin        , 02 ; mode linear decay
+CONSTANT mode_exp        , 03 ; mode exponential decay
+
+CONSTANT buttons_ct      , 10 ; center
+CONSTANT buttons_up      , 08 ; up
+CONSTANT buttons_dn      , 04 ; down
+CONSTANT buttons_lf      , 02 ; left
+CONSTANT buttons_rt      , 01 ; right
+
+;;================================================
+;; Clock state declarations.
+;;================================================
+
+NAMEREG s0, cs_major		
+CONSTANT cs_major_idle, 00 	; clock runs
+CONSTANT cs_major_seconds, 01 	; set seconds
+CONSTANT cs_major_minutes, 02 	; set minutes
+CONSTANT cs_major_hours, 03 	; set hours
+
+NAMEREG s1, cs_sixtieths	; 60 Hz counter
+CONSTANT cs_begins, 00
+
+;;=======================================================
+;; Button debounce state
+;;=======================================================
+
+NAMEREG sB, ds_counter		; button debounce counter
+NAMEREG sC, ds_btn		; button sample
+NAMEREG sD, ds			; debounce state
+
+;;=====================================================
+;; Global variables.
+;;=====================================================
+
+NAMEREG s2, seconds_ten		; tens digit of seconds
+NAMEREG s3, seconds_one		; unit digit of seconds
+NAMEREG s4, minutes_ten		; tens digit of minutes
+NAMEREG s5, minutes_one		; unit digit of minutes
+NAMEREG s6, hours_ten		; tens digit of hours
+NAMEREG s7, hours_one		; unit digit of hours
+
+NAMEREG s8, xpos		; x-coordinate
+NAMEREG s9, ypos		; y-coordinate
+
+NAMEREG sA, digit		; value of digit
+
+NAMEREG sE, btnsamp		; button sample
+NAMEREG sF, scratch
+
+;;=============================================================================
+;; Other constants.
+;;=============================================================================
+
+CONSTANT zero           , 00
+CONSTANT one            , 01
+CONSTANT two		, 02
+CONSTANT three		, 03
+CONSTANT four		, 04
+CONSTANT five		, 05
+CONSTANT six		, 06
+CONSTANT seven		, 07
+CONSTANT eight		, 08
+CONSTANT nine		, 09
+CONSTANT fifty_nine	, 3B
+CONSTANT twenty_three	, 17
+
+CONSTANT ypos_hours	, 77'd		; y-coordinates of hours
+CONSTANT ypos_minutes	, 137'd		; y-coordinates of minutes
+
+CONSTANT xpos_hours_ten	  , 82'd	; x-coordinates of tens digit of hour
+CONSTANT xpos_hours_one	  , 112'd	; x-coordinates of unit digit of hour
+
+CONSTANT xpos_minutes_ten , 122'd	; x-coordinates of tens digit of minute
+CONSTANT xpos_minutes_one , 152'd	; x-coordinates of unit digit of minute
+
+;;===========================
+;; Analog interface for seconds
+;; Formula to find the x and y coordinates of 60 positions of seconds
+;; px = 5 + 123 - 123*cos(x*6)
+;;==========================
+
+CONSTANT p0, 5'd
+CONSTANT p1, 6'd
+CONSTANT p2, 8'd
+CONSTANT p3, 11'd
+CONSTANT p4, 16'd
+CONSTANT p5, 21'd
+CONSTANT p6, 28'd
+CONSTANT p7, 37'd
+CONSTANT p8, 46'd
+CONSTANT p9, 56'd
+CONSTANT p10, 67'd
+CONSTANT p11, 78'd
+CONSTANT p12, 90'd
+CONSTANT p13, 102'd
+CONSTANT p14, 115'd
+CONSTANT p15, 128'd
+CONSTANT p16, 141'd
+CONSTANT p17, 154'd
+CONSTANT p18, 166'd
+CONSTANT p19, 178'd
+CONSTANT p20, 190'd
+CONSTANT p21, 200'd
+CONSTANT p22, 210'd
+CONSTANT p23, 219'd
+CONSTANT p24, 228'd
+CONSTANT p25, 235'd
+CONSTANT p26, 240'd
+CONSTANT p27, 245'd
+CONSTANT p28, 248'd
+CONSTANT p29, 250'd
+CONSTANT p30, 251'd
+
+;;============================================================================
+;; Boot.
+;; This performs one-time initialization of the hardware and the clock state.
+;;============================================================================
+
+         boot: CALL hw_init                        ; initial hardware setup
+               CALL cs_init                        ; set initial clock state
+               ENABLE INTERRUPT                    ; enable vblnk interrupt
+
+;;============================================================================
+;; Main.
+;; This is an empty loop, does nothing, waiting for interrupts to occur.
+;;============================================================================
+
+         main: JUMP main                           ; empty loop, does nothing
+
+;;============================================================================
+;; Interrupt.
+;; This is the main game logic.  At each interrupt, the procedure is to read
+;; the user input, calculate the next clock state, and then draw the clock 
+;; state on the display and quad seven segment display
+;;============================================================================
+
+         isr:  	CALL user_input			; debounce button press
+		CALL calc_next_cs		; run FSM
+		CALL draw_cs                    ; draw clock on screen
+	       	CALL qssd_cs		 	; display to qssd
+               	RETURNI ENABLE                  ; return with enable
+
+;;=====================================================================================
+;; Subroutine: hw_init
+;; This puts the hardware into a known, initial state.  This includes a wait
+;; to make sure the line drawing harware is idle (a wait loop which is also
+;; called from other routines, as a subroutine).
+;;=====================================================================================
+
+      hw_init: 	LOAD ds, zero			; reset debounce FSM
+		LOAD scratch, zero		
+		OUTPUT scratch, leds_hi		; turn off leds_hi
+		LOAD scratch, four              ; 
+               	OUTPUT scratch, qssd_dp         ; turn on the second rightmost qssd dot
+               	LOAD scratch, mode_exp          ; load desired mode
+               	OUTPUT scratch, mode            ; program the framebuffer
+ hw_init_wait: INPUT scratch, busy              ; get framebuffer busy
+               COMPARE scratch, busy_go         ; check framebuffer busy
+               JUMP Z, hw_init_wait             ; back to wait if busy
+               RETURN                              
+
+;;=====================================================================================
+;; Subroutine: user_input
+;; This lets user set the time
+;;=====================================================================================
+
+   user_input: 	LOAD btnsamp, zero		; clear button's value
+		COMPARE ds, zero		; go to state 0 of button debounce state
+		JUMP Z, ds_zero
+
+		COMPARE ds, one			; go to state 1 of button debounce state
+		JUMP Z, ds_one
+	
+		COMPARE ds, two			; go to state 2 of button debounce state
+		JUMP Z, ds_two
+		RETURN
+
+ds_zero:	LOAD ds, zero			; no button press state
+		LOAD ds_counter, zero
+		INPUT ds_btn, buttons           ; sample button hardware
+		COMPARE ds_btn, zero
+		JUMP NZ, ds_one			; go to state 1 if any button is pressed
+		RETURN
+
+ds_one:		LOAD ds, one			; validation state
+		INPUT btnsamp, buttons
+		COMPARE ds_btn, btnsamp		; compare new sample with the old press
+		JUMP NZ, reset_ds		
+		
+		LOAD btnsamp, zero
+		ADD ds_counter, one		; add one to debounce counter
+		COMPARE ds_counter, nine	; button press is valid if read 9 times
+		JUMP Z, ds_two
+		RETURN
+
+ds_two:		LOAD btnsamp, ds_btn		; button press is valid
+		LOAD ds, zero			; reset debounce state
+		RETURN
+
+reset_ds:	LOAD ds, zero
+		RETURN
+
+;;============================================================================
+;; Subroutine: cs_init
+;; This puts the clock into a known, initial state.  I've assigned all of the
+;; clock state to a known value -- although some of these assignments do not
+;; really matter based on design of the clock state machine.
+;;============================================================================
+
+      cs_init: LOAD cs_major, cs_major_idle     ; start in idle mdoe
+               LOAD cs_sixtieths, cs_begins     ; start with counter zero
+               RETURN                            
+
+;;======================================================================================
+;; Subroutine: calc_next_cs
+;; This logic calculates the next state of the clock, given the debounced user
+;; inputs and the current state of the clock.
+;;======================================================================================
+
+ calc_next_cs:	COMPARE cs_major, cs_major_idle     	; are we in state 0?
+		JUMP Z, calc_idle			; run clock
+
+		COMPARE cs_major, cs_major_seconds	; are we setting seconds?
+		JUMP Z, calc_seconds
+
+                COMPARE cs_major, cs_major_minutes  	; are we setting minutes?
+                JUMP Z, calc_minutes                	
+
+                COMPARE cs_major, cs_major_hours  	; are we setting hours?
+                JUMP Z, calc_hours                
+		RETURN
+
+ calc_idle: 	LOAD cs_major, cs_major_idle	
+		TEST btnsamp, buttons_lf		; press left button to set time
+		JUMP NZ, set_calc_seconds
+
+		COMPARE cs_sixtieths, fifty_nine	
+		JUMP Z, check_seconds_one		
+		ADD cs_sixtieths, one			; add if not reach one second
+		RETURN
+
+	check_seconds_one:	LOAD cs_sixtieths, zero			; reset 60 Hz counter
+			 	COMPARE seconds_one, nine		; upper bound
+			   	JUMP Z, check_seconds_ten
+		   		ADD seconds_one, one			; add one second
+	          	 	RETURN
+
+	check_seconds_ten: 	LOAD seconds_one, zero			; reset after 10 seconds
+		   		COMPARE seconds_ten, five		; upper bound
+		   		JUMP Z, check_minutes_one
+		   		ADD seconds_ten, one			; add ten seconds
+		   		RETURN
+
+	check_minutes_one: 	LOAD seconds_ten, zero			; reset seconds after 1 minute
+  		   		COMPARE minutes_one, nine		; upper bound
+		   		JUMP Z, check_minutes_ten
+		   		ADD minutes_one, one			; add one minute
+		   		RETURN
+
+	check_minutes_ten: 	LOAD minutes_one, zero			; reset after 10 minutes
+		   		COMPARE minutes_ten, five		; upper bound
+		   		JUMP Z, check_hours_ten
+		   		ADD minutes_ten, one			; add ten minutes
+		   		RETURN
+
+	check_hours_ten: 	LOAD minutes_ten, zero			
+		 		COMPARE hours_ten, two			; upper bound
+		 		JUMP Z, check_hours_one_three
+		 		COMPARE hours_one, nine			; upper bound
+		 		JUMP Z, add_hours_ten
+	add_hours_one:	 	ADD hours_one, one			; add one hour
+		 		RETURN
+ 
+	check_hours_one_three:	COMPARE hours_one, three			; upper bound
+				JUMP NZ, add_hours_one
+				LOAD hours_one, zero			; reset after 24 hours
+				LOAD hours_ten, zero		
+				RETURN
+
+	add_hours_ten:		LOAD hours_one, zero			
+				ADD hours_ten, one			; add ten hours
+				RETURN
+
+set_calc_seconds: LOAD cs_major, cs_major_seconds			; setting seconds state
+		  RETURN
+		
+calc_seconds:	TEST btnsamp, buttons_ct		; resume running clock
+		JUMP NZ, calc_idle
+	
+		TEST btnsamp, buttons_lf		; advance to set minutes
+		JUMP NZ, set_calc_minutes
+	
+		TEST btnsamp, buttons_up		; increase seconds
+		JUMP NZ, check_seconds_one_up
+
+		TEST btnsamp, buttons_dn		; decrease seconds
+		JUMP NZ, check_seconds_one_down
+
+		RETURN
+
+	check_seconds_one_up: 	COMPARE seconds_one, nine	; upper bound
+		      		JUMP Z, check_seconds_ten_up
+		      		ADD seconds_one, one		; add one second
+		      		RETURN
+
+	check_seconds_ten_up: 	LOAD seconds_one, zero		
+		      		COMPARE seconds_ten, five	; upper bound
+		      		JUMP Z, reset_seconds_ten
+		      		ADD seconds_ten, one		; add ten seconds
+		     		RETURN
+
+	reset_seconds_ten:	LOAD seconds_ten, zero
+				RETURN
+
+	check_seconds_one_down: COMPARE seconds_one, zero	; lower bound
+				JUMP Z, check_seconds_ten_down
+				SUB seconds_one, one		; subtract one second
+				RETURN
+
+	check_seconds_ten_down: LOAD seconds_one, nine		
+				COMPARE seconds_ten, zero	; lower bound
+				JUMP Z, set_five_seconds_ten
+				SUB seconds_ten, one		; subtract ten seconds
+				RETURN
+
+	set_five_seconds_ten:   LOAD seconds_ten, five
+				RETURN
+
+set_calc_minutes: LOAD cs_major, cs_major_minutes	; setting minutes state
+		  RETURN
+
+calc_minutes:  	TEST btnsamp, buttons_ct		; resume running clock
+		JUMP NZ, calc_idle
+
+		TEST btnsamp, buttons_lf		; advance to set hours
+		JUMP NZ, set_calc_hours
+
+		TEST btnsamp, buttons_up		; increase minutes
+		JUMP NZ, check_minutes_one_up
+
+		TEST btnsamp, buttons_dn		; decrease miutes
+		JUMP NZ, check_minutes_one_down
+		RETURN
+
+	check_minutes_one_up: 	COMPARE minutes_one, nine	; upper bound
+		  		JUMP Z, check_minutes_ten_up
+		  		ADD minutes_one, one		; add one minute
+			 	RETURN
+
+	check_minutes_ten_up: 	LOAD minutes_one, zero		
+				COMPARE minutes_ten, five	; upper bound
+				JUMP Z, reset_minutes_ten
+				ADD minutes_ten, one		; add ten minutes
+				RETURN
+
+	reset_minutes_ten:	LOAD minutes_ten, zero
+				RETURN
+
+	check_minutes_one_down: COMPARE minutes_one, zero	; lower bound
+				JUMP Z, check_minutes_ten_down
+				SUB minutes_one, one		; subtract one minute
+				RETURN
+
+	check_minutes_ten_down: LOAD minutes_one, nine
+				COMPARE minutes_ten, zero	; lower bound
+				JUMP Z, set_five_minutes_ten
+				SUB minutes_ten, one		; subtract ten minutes
+				RETURN
+
+	set_five_minutes_ten: 	LOAD minutes_ten, five
+				RETURN
+
+set_calc_hours: LOAD cs_major, cs_major_hours			; setting hours state
+		RETURN
+
+calc_hours: 	TEST btnsamp, buttons_ct			; resume running clock
+               	JUMP NZ, calc_idle
+
+		TEST btnsamp, buttons_lf			; advance to set seconds
+		JUMP NZ, set_calc_seconds
+
+		TEST btnsamp, buttons_up			; increase hours
+		JUMP NZ, check_hours_ten_up
+	
+		TEST btnsamp, buttons_dn			; decrease hours
+		JUMP NZ, check_hours_one_down
+		RETURN
+
+	check_hours_ten_up:	COMPARE hours_ten, two			; upper bound
+				JUMP Z, check_hours_one_three_up
+				COMPARE hours_one, nine			; upper bound
+				JUMP NZ, add_hours_one_up
+				ADD hours_ten, one			; add ten hours
+				LOAD hours_one, zero
+				RETURN
+	
+	check_hours_one_three_up: 	COMPARE hours_one, three	; upper bound
+			  		JUMP NZ, add_hours_one_up
+					LOAD hours_ten, zero		; overflow
+					LOAD hours_one, zero
+					RETURN
+
+	add_hours_one_up:	ADD hours_one, one			; add one hour
+				RETURN
+
+	check_hours_one_down:	COMPARE hours_one, zero			; lower bound
+				JUMP Z, check_hours_ten_down
+				SUB hours_one, one			; subtract one hour
+				RETURN
+
+	check_hours_ten_down:	COMPARE hours_ten, zero			; lower bound
+				JUMP Z, reset_hours_down
+				LOAD hours_one, nine			
+				SUB hours_ten, one			; subtract ten hours
+				RETURN
+
+	reset_hours_down:	LOAD hours_one, three			; reset hours to 23
+				LOAD hours_ten, two
+				RETURN
+				
+;;============================================================================
+;; Subroutine: draw_cs
+;; This uses the current clock state as input, and draws it on the display.
+;;============================================================================
+
+ draw_cs:	CALL draw_ticks				; draw ticks
+
+		COMPARE cs_major, cs_major_idle		; draw running clock
+		JUMP Z, draw_cs_idle	
+		
+		COMPARE cs_major, cs_major_seconds	; draw state of setting seconds
+		JUMP Z, draw_cs_seconds
+		
+		COMPARE cs_major, cs_major_minutes	; draw state of setting minutes
+		JUMP Z, draw_cs_minutes
+	
+		COMPARE cs_major, cs_major_hours	; draw state of setting hours
+		JUMP Z, draw_cs_hours
+		RETURN
+
+ draw_cs_idle: 	CALL set_beam_hi		
+		CALL draw_hours_ten		; draw hour digits	
+		CALL draw_hours_one
+
+		CALL draw_minutes_ten		; draw minute digits
+		CALL draw_minutes_one
+		
+		CALL draw_analog_seconds	; draw seconds circle
+		RETURN
+
+ draw_cs_seconds:	CALL set_beam_lo	; lower intensity of hours and minutes
+			CALL draw_hours_ten			
+			CALL draw_hours_one
+
+			CALL draw_minutes_ten
+			CALL draw_minutes_one
+
+			CALL set_beam_hi		; hi intensity of seconds
+			CALL draw_analog_seconds	
+			RETURN	
+		
+ draw_cs_minutes:	CALL set_beam_lo		; low intensity of hours and seconds
+			CALL draw_hours_ten			
+			CALL draw_hours_one
+
+			CALL draw_analog_seconds
+
+			CALL set_beam_hi		; hi intensity of minutes
+			CALL draw_minutes_ten
+			CALL draw_minutes_one
+			RETURN
+
+ draw_cs_hours:		CALL set_beam_hi		; hi intensity of hours
+			CALL draw_hours_ten			
+			CALL draw_hours_one
+		
+			CALL set_beam_lo		; low intensity of minutes and seconds
+			CALL draw_minutes_ten
+			CALL draw_minutes_one
+
+			CALL draw_analog_seconds
+			RETURN
+
+ set_beam_lo:	LOAD scratch, beam_lo		; set low intensity
+		OUTPUT scratch, beam
+		RETURN
+
+ set_beam_hi:   LOAD scratch, beam_hi		; set high intensity
+		OUTPUT scratch, beam
+		RETURN
+
+;;========================================================================================
+;; Draw hour and minute digits
+;;========================================================================================
+
+ draw_hours_ten: 	LOAD xpos, xpos_hours_ten
+               		LOAD ypos, ypos_hours
+               		CALL moveto
+		
+			LOAD digit, hours_ten
+			CALL draw_digit
+			RETURN
+
+ draw_hours_one: 	LOAD xpos, xpos_hours_one
+		 	LOAD ypos, ypos_hours
+			CALL moveto
+			LOAD digit, hours_one
+			CALL draw_digit
+			RETURN
+
+ draw_minutes_ten: LOAD xpos, xpos_minutes_ten
+		   LOAD ypos, ypos_minutes
+		   CALL moveto
+		   LOAD digit, minutes_ten
+		   CALL draw_digit
+		   RETURN
+
+ draw_minutes_one: LOAD xpos, xpos_minutes_one
+		   LOAD ypos, ypos_minutes
+		   CALL moveto
+		   LOAD digit, minutes_one
+		   CALL draw_digit
+		   RETURN
+		 
+ draw_digit:	COMPARE digit, zero
+		JUMP Z, draw_zero
+		COMPARE digit, one
+		JUMP Z, draw_one
+		COMPARE digit, two
+		JUMP Z, draw_two
+		COMPARE digit, three
+		JUMP Z, draw_three
+		COMPARE digit, four
+		JUMP Z, draw_four
+		COMPARE digit, five
+		JUMP Z, draw_five
+		COMPARE digit, six
+		JUMP Z, draw_six
+		COMPARE digit, seven
+		JUMP Z, draw_seven
+		COMPARE digit, eight
+		JUMP Z, draw_eight
+		COMPARE digit, nine
+		JUMP Z, draw_nine
+		RETURN
+
+ draw_zero:    	ADD xpos, 14	; new xpos = xpos_base + 20
+               	CALL drawto
+		ADD ypos, 28	; new ypos = ypos_base + 40
+               	CALL drawto
+		SUB xpos, 14
+		CALL drawto
+		SUB ypos, 28
+		CALL drawto
+		RETURN
+           
+ draw_one: 	ADD xpos, 14
+		CALL moveto
+		ADD ypos, 28
+		CALL drawto
+		RETURN
+
+ draw_two:	ADD xpos, 14
+		CALL drawto
+		ADD ypos, 14
+		CALL drawto
+		SUB xpos, 14
+		CALL drawto
+		ADD ypos, 14
+		CALL drawto
+		ADD xpos, 14
+		CALL drawto
+		RETURN
+
+ draw_three:	ADD xpos, 14
+		CALL drawto
+		ADD ypos, 28
+		CALL drawto
+		SUB xpos, 14
+		CALL drawto
+		SUB ypos, 14
+		CALL moveto
+		ADD xpos, 14
+		CALL drawto
+		RETURN
+
+ draw_four:	ADD ypos, 14
+		CALL drawto
+		ADD xpos, 14
+		CALL drawto
+		SUB ypos, 14
+		CALL moveto
+		ADD ypos, 28
+		CALL drawto
+		RETURN
+
+ draw_five:	ADD xpos, 14
+		CALL drawto
+		SUB xpos, 14
+		CALL moveto
+		ADD ypos, 14
+		CALL drawto
+		ADD xpos, 14
+		CALL drawto
+		ADD ypos, 14
+		CALL drawto
+		SUB xpos, 14
+		CALL drawto
+		RETURN
+
+ draw_six:	ADD xpos, 14
+		CALL drawto
+		SUB xpos, 14
+		CALL moveto
+		ADD ypos, 28
+		CALL drawto
+		ADD xpos, 14
+		CALL drawto
+		SUB ypos, 14
+		CALL drawto
+		SUB xpos, 14
+		CALL drawto
+		RETURN
+
+ draw_seven:	ADD xpos, 14
+		CALL drawto
+		ADD ypos, 28
+		CALL drawto
+		RETURN
+
+ draw_eight:	ADD xpos, 14
+		CALL drawto
+		ADD ypos, 28
+		CALL drawto
+		SUB xpos, 14
+		CALL drawto
+		SUB ypos, 28
+		CALL drawto
+		ADD ypos, 14
+		CALL moveto
+		ADD xpos, 14
+		CALL drawto
+		RETURN
+
+ draw_nine:	ADD xpos, 14
+		CALL drawto
+		ADD ypos, 28
+		CALL drawto
+		SUB ypos, 14
+		CALL moveto
+		SUB xpos, 14
+		CALL drawto
+		SUB ypos, 14
+		CALL drawto
+		RETURN
+
+;;=======================================================================================
+;; Draw second circle
+;;=======================================================================================
+
+ draw_analog_seconds:	LOAD scratch, seconds_ten	; convert to seconds
+			SL0 scratch
+			SL0 scratch
+			SL0 scratch
+			LOAD digit, zero
+			ADD digit, scratch		
+			LOAD scratch, seconds_ten
+			SL0 scratch
+			ADD digit, scratch
+			ADD digit, seconds_one
+			CALL find_position
+			CALL moveto
+			SUB xpos, 03
+			SUB ypos, 03
+			CALL moveto
+			ADD xpos, 06
+			CALL drawto
+			ADD ypos, 06
+			CALL drawto
+			SUB xpos, 06
+			CALL drawto
+			SUB ypos, 06
+			CALL drawto
+			RETURN
+
+ find_position:		COMPARE digit, 00
+			JUMP Z, pos_0
+			COMPARE digit, 01
+			JUMP Z, pos_1
+			COMPARE digit, 02
+			JUMP Z, pos_2
+			COMPARE digit, 03
+			JUMP Z, pos_3
+			COMPARE digit, 04
+			JUMP Z, pos_4
+			COMPARE digit, 05
+			JUMP Z, pos_5
+			COMPARE digit, 06
+			JUMP Z, pos_6
+			COMPARE digit, 07
+			JUMP Z, pos_7
+			COMPARE digit, 08
+			JUMP Z, pos_8
+			COMPARE digit, 09
+			JUMP Z, pos_9
+			COMPARE digit, 0A
+			JUMP Z, pos_10
+			COMPARE digit, 0B
+			JUMP Z, pos_11
+			COMPARE digit, 0C
+			JUMP Z, pos_12
+			COMPARE digit, 0D
+			JUMP Z, pos_13
+			COMPARE digit, 0E
+			JUMP Z, pos_14
+			COMPARE digit, 0F
+			JUMP Z, pos_15
+			COMPARE digit, 10
+			JUMP Z, pos_16
+			COMPARE digit, 11
+			JUMP Z, pos_17
+			COMPARE digit, 12
+			JUMP Z, pos_18
+			COMPARE digit, 13
+			JUMP Z, pos_19
+			COMPARE digit, 14
+			JUMP Z, pos_20
+			COMPARE digit, 15
+			JUMP Z, pos_21
+			COMPARE digit, 16
+			JUMP Z, pos_22
+			COMPARE digit, 17
+			JUMP Z, pos_23
+			COMPARE digit, 18
+			JUMP Z, pos_24
+			COMPARE digit, 19
+			JUMP Z, pos_25
+			COMPARE digit, 1A
+			JUMP Z, pos_26
+			COMPARE digit, 1B
+			JUMP Z, pos_27
+			COMPARE digit, 1C
+			JUMP Z, pos_28
+			COMPARE digit, 1D
+			JUMP Z, pos_29
+			COMPARE digit, 1E
+			JUMP Z, pos_30
+			COMPARE digit, 1F
+			JUMP Z, pos_31
+			COMPARE digit, 20
+			JUMP Z, pos_32	
+			COMPARE digit, 21
+			JUMP Z, pos_33
+			COMPARE digit, 22
+			JUMP Z, pos_34
+			COMPARE digit, 23
+			JUMP Z, pos_35
+			COMPARE digit, 24
+			JUMP Z, pos_36
+			COMPARE digit, 25
+			JUMP Z, pos_37
+			COMPARE digit, 26
+			JUMP Z, pos_38
+			COMPARE digit, 27
+			JUMP Z, pos_39
+			COMPARE digit, 28
+			JUMP Z, pos_40
+			COMPARE digit, 29
+			JUMP Z, pos_41
+			COMPARE digit, 2A
+			JUMP Z, pos_42
+			COMPARE digit, 2B
+			JUMP Z, pos_43
+			COMPARE digit, 2C
+			JUMP Z, pos_44
+			COMPARE digit, 2D
+			JUMP Z, pos_45
+			COMPARE digit, 2E
+			JUMP Z, pos_46
+			COMPARE digit, 2F
+			JUMP Z, pos_47
+			COMPARE digit, 30
+			JUMP Z, pos_48
+			COMPARE digit, 31
+			JUMP Z, pos_49
+			COMPARE digit, 32
+			JUMP Z, pos_50
+			COMPARE digit, 33
+			JUMP Z, pos_51
+			COMPARE digit, 34
+			JUMP Z, pos_52
+			COMPARE digit, 35
+			JUMP Z, pos_53
+			COMPARE digit, 36
+			JUMP Z, pos_54
+			COMPARE digit, 37
+			JUMP Z, pos_55
+			COMPARE digit, 38
+			JUMP Z, pos_56
+			COMPARE digit, 39
+			JUMP Z, pos_57
+			COMPARE digit, 3A
+			JUMP Z, pos_58
+			COMPARE digit, 3B
+			JUMP Z, pos_59
+
+pos_0:	LOAD xpos, p15
+	LOAD ypos, p0
+	RETURN
+pos_1:	LOAD xpos, p16
+	LOAD ypos, p1
+	RETURN
+pos_2:	LOAD xpos, p17
+	LOAD ypos, p2
+	RETURN
+pos_3:	LOAD xpos, p18
+	LOAD ypos, p3
+	RETURN
+pos_4:	LOAD xpos, p19
+	LOAD ypos, p4
+	RETURN
+pos_5:	LOAD xpos, p20
+	LOAD ypos, p5
+	RETURN
+pos_6:	LOAD xpos, p21
+	LOAD ypos, p6
+	RETURN
+pos_7:	LOAD xpos, p22
+	LOAD ypos, p7
+	RETURN
+pos_8:	LOAD xpos, p23
+	LOAD ypos, p8
+	RETURN
+pos_9:	LOAD xpos, p24
+	LOAD ypos, p9
+	RETURN
+pos_10:	LOAD xpos, p25
+	LOAD ypos, p10
+	RETURN
+pos_11:	LOAD xpos, p26
+	LOAD ypos, p11
+	RETURN
+pos_12:	LOAD xpos, p27
+	LOAD ypos, p12
+	RETURN
+pos_13:	LOAD xpos, p28
+	LOAD ypos, p13
+	RETURN
+pos_14:	LOAD xpos, p29
+	LOAD ypos, p14
+	RETURN
+pos_15:	LOAD xpos, p30
+	LOAD ypos, p15
+	RETURN
+pos_16:	LOAD xpos, p29
+	LOAD ypos, p16
+	RETURN
+pos_17:	LOAD xpos, p28
+	LOAD ypos, p17
+	RETURN
+pos_18:	LOAD xpos, p27
+	LOAD ypos, p18
+	RETURN
+pos_19:	LOAD xpos, p26
+	LOAD ypos, p19
+	RETURN
+pos_20:	LOAD xpos, p25
+	LOAD ypos, p20
+	RETURN
+pos_21:	LOAD xpos, p24
+	LOAD ypos, p21
+	RETURN
+pos_22:	LOAD xpos, p23
+	LOAD ypos, p22
+	RETURN
+pos_23:	LOAD xpos, p22
+	LOAD ypos, p23
+	RETURN
+pos_24:	LOAD xpos, p21
+	LOAD ypos, p24
+	RETURN
+pos_25:	LOAD xpos, p20
+	LOAD ypos, p25
+	RETURN
+pos_26:	LOAD xpos, p19
+	LOAD ypos, p26
+	RETURN
+pos_27:	LOAD xpos, p18
+	LOAD ypos, p27
+	RETURN
+pos_28:	LOAD xpos, p17
+	LOAD ypos, p28
+	RETURN
+pos_29:	LOAD xpos, p16
+	LOAD ypos, p29
+	RETURN
+pos_30:	LOAD xpos, p15
+	LOAD ypos, p30
+	RETURN
+pos_31:	LOAD xpos, p14
+	LOAD ypos, p29
+	RETURN
+pos_32:	LOAD xpos, p13
+	LOAD ypos, p28
+	RETURN
+pos_33:	LOAD xpos, p12
+	LOAD ypos, p27
+	RETURN
+pos_34:	LOAD xpos, p11
+	LOAD ypos, p26
+	RETURN
+pos_35:	LOAD xpos, p10
+	LOAD ypos, p25
+	RETURN
+pos_36:	LOAD xpos, p9
+	LOAD ypos, p24
+	RETURN
+pos_37:	LOAD xpos, p8
+	LOAD ypos, p23
+	RETURN
+pos_38:	LOAD xpos, p7
+	LOAD ypos, p22
+	RETURN
+pos_39:	LOAD xpos, p6
+	LOAD ypos, p21
+	RETURN
+pos_40:	LOAD xpos, p5
+	LOAD ypos, p20
+	RETURN
+pos_41:	LOAD xpos, p4
+	LOAD ypos, p19
+	RETURN
+pos_42:	LOAD xpos, p3
+	LOAD ypos, p18
+	RETURN
+pos_43:	LOAD xpos, p2
+	LOAD ypos, p17
+	RETURN
+pos_44:	LOAD xpos, p1
+	LOAD ypos, p16
+	RETURN
+pos_45:	LOAD xpos, p0
+	LOAD ypos, p15
+	RETURN
+pos_46:	LOAD xpos, p1
+	LOAD ypos, p14
+	RETURN
+pos_47:	LOAD xpos, p2
+	LOAD ypos, p13
+	RETURN
+pos_48:	LOAD xpos, p3
+	LOAD ypos, p12
+	RETURN
+pos_49:	LOAD xpos, p4
+	LOAD ypos, p11
+	RETURN
+pos_50:	LOAD xpos, p5
+	LOAD ypos, p10
+	RETURN
+pos_51:	LOAD xpos, p6
+	LOAD ypos, p9
+	RETURN
+pos_52:	LOAD xpos, p7
+	LOAD ypos, p8
+	RETURN
+pos_53:	LOAD xpos, p8
+	LOAD ypos, p7
+	RETURN
+pos_54:	LOAD xpos, p9
+	LOAD ypos, p6
+	RETURN
+pos_55:	LOAD xpos, p10
+	LOAD ypos, p5
+	RETURN
+pos_56:	LOAD xpos, p11
+	LOAD ypos, p4
+	RETURN
+pos_57:	LOAD xpos, p12
+	LOAD ypos, p3
+	RETURN
+pos_58:	LOAD xpos, p13
+	LOAD ypos, p2
+	RETURN
+pos_59:	LOAD xpos, p14
+	LOAD ypos, p1
+	RETURN	
+
+;;============================================================================
+;; Subroutine: moveto and drawto
+;; The moveto routine uses the global variables xpos and ypos, and the drawto
+;; routine uses these global variables as well as the endpoint coordinates in
+;; the display controller.  Moveto simply copies xpos and ypos into endpoint
+;; coordinates in the display controller, it does not draw anything.  The
+;; drawto routine copies endpoint coordinates to startpoint coordinates (does
+;; not matter if the endpoint was from an actual draw, or simply an update
+;; by moveto) and then copies xpos and ypos into endpoint coordinates, then
+;; starts a linedraw.
+;;============================================================================
+
+       moveto: OUTPUT xpos, endx                   ; copy global to hardware
+               OUTPUT ypos, endy                   ; copy global to hardware
+               RETURN                              ; return
+
+       drawto: INPUT scratch, endx                 ; read hardware
+               OUTPUT scratch, stax                ; write hardware
+               OUTPUT xpos, endx                   ; copy global to hardware
+               INPUT scratch, endy                 ; read hardware
+               OUTPUT scratch, stay                ; write hardware
+               OUTPUT ypos, endy                   ; copy global to hardware
+               LOAD scratch, busy_go               ; prepare the command
+               OUTPUT scratch, busy                ; send the command
+               CALL hw_init_wait                   ; wait line draw done
+               RETURN                              ; return
+
+;;============================================================================
+;; Subroutine: qssd_cs
+;; Display the values to quad seven segment display
+;;============================================================================
+
+qssd_cs:	LOAD scratch, hours_ten		; shift left tens digit by 4 bits
+		SL0 scratch
+		SL0 scratch
+		SL0 scratch
+		SL0 scratch
+		ADD scratch, hours_one
+		OUTPUT scratch, qssd_hi
+		LOAD scratch, minutes_ten
+		SL0 scratch
+		SL0 scratch
+		SL0 scratch
+		SL0 scratch
+		ADD scratch, minutes_one
+		OUTPUT scratch, qssd_lo
+
+		LOAD scratch, seconds_ten
+		SL0 scratch
+		SL0 scratch
+		SL0 scratch
+		SL0 scratch
+		ADD scratch, seconds_one
+		OUTPUT scratch, leds_lo
+		RETURN
+
+;;===========================================================================
+;; Subroutine: draw_ticks
+;;============================================================================
+
+draw_ticks:	CALL set_beam_hi
+		CALL pos_0
+		CALL moveto
+		ADD ypos, 04
+		CALL drawto
+
+		CALL pos_5
+		CALL moveto
+		SUB xpos, 02
+		ADD ypos, 03
+		CALL drawto
+	
+		CALL pos_10
+		CALL moveto
+		SUB xpos, 03
+		ADD ypos, 02
+		CALL drawto
+	
+		CALL pos_15
+		CALL moveto
+		SUB xpos, 04
+		CALL drawto
+	
+		CALL pos_20
+		CALL moveto
+		SUB xpos, 03
+		SUB ypos, 02
+		CALL drawto
+
+		CALL pos_25
+		CALL moveto
+		SUB xpos, 02
+		SUB ypos, 03
+		CALL drawto
+
+		CALL pos_30
+		CALL moveto
+		SUB ypos, 04
+		CALL drawto
+
+		CALL pos_35
+		CALL moveto
+		ADD xpos, 02
+		SUB ypos, 03
+		CALL drawto
+		
+		CALL pos_40
+		CALL moveto
+		ADD xpos, 03
+		SUB ypos, 02
+		CALL drawto
+		
+		CALL pos_45
+		CALL moveto
+		ADD xpos, 04
+		CALL drawto
+
+		CALL pos_50
+		CALL moveto
+		ADD xpos, 03
+		ADD ypos, 02
+		CALL drawto
+		
+		CALL pos_55
+		CALL moveto
+		ADD xpos, 02
+		ADD ypos, 03
+		CALL drawto
+		RETURN
+
+;;============================================================================
+;; Interrupt - Vector.
+;;============================================================================
+
+               ADDRESS 7FF                         ; must be located here
+   isr_vector: JUMP isr                            ; always jump to isr
+
